@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "メインウィンドウに許可する機能。ファイル選択ダイアログだけを使う。",
+  "description": "メインウィンドウに許可する機能。ファイル選択ダイアログと、Android の戻るボタンの処理 (購読とアプリの終了)。",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "core:app:allow-register-listener",
+    "core:app:allow-exit",
+    "dialog:default"
+  ]
 }

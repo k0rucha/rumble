@@ -12,16 +12,18 @@ mod external_links;
 
 use std::sync::Arc;
 
-use rumble_core::storage::{JsonAccountStore, KeychainSecretStore};
+use rumble_core::storage::{JsonAccountStore, SecretStore};
 use rumble_core::MailService;
 use tauri::{Emitter, Manager};
 
 /// サーバー側の変化をフロントエンドへ知らせるイベント名。
 const MAIL_EVENT: &str = "mail-event";
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(external_links::plugin())
         .setup(|app| {
@@ -30,7 +32,7 @@ pub fn run() {
 
             let service = Arc::new(MailService::new(
                 Box::new(JsonAccountStore::new(config_dir.join("accounts.json"))),
-                Box::new(KeychainSecretStore::new(app.config().identifier.clone())),
+                secret_store(app)?,
                 Arc::new(move |event| {
                     let _ = handle.emit(MAIL_EVENT, event);
                 }),
@@ -50,12 +52,38 @@ pub fn run() {
             commands::list_messages,
             commands::search_messages,
             commands::get_message,
+            commands::verify_sender,
+            commands::message_source,
             commands::save_attachment,
             commands::set_flag,
             commands::move_messages,
             commands::delete_messages,
             commands::send_message,
+            commands::classifier_enabled,
+            commands::enable_classifier,
+            commands::disable_classifier,
+            commands::classify_messages,
+            commands::list_by_category,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start rumble");
+}
+
+/// パスワードの保管先。デスクトップでは OS のキーチェーン。
+#[cfg(not(target_os = "android"))]
+fn secret_store(app: &tauri::App) -> tauri::Result<Box<dyn SecretStore>> {
+    use rumble_core::storage::KeychainSecretStore;
+    Ok(Box::new(KeychainSecretStore::new(
+        app.config().identifier.clone(),
+    )))
+}
+
+/// Android には使える資格情報ストアが無いので、他のアプリから読めない
+/// アプリ専用領域のファイルに置く。
+#[cfg(target_os = "android")]
+fn secret_store(app: &tauri::App) -> tauri::Result<Box<dyn SecretStore>> {
+    use rumble_core::storage::FileSecretStore;
+    Ok(Box::new(FileSecretStore::new(
+        app.path().app_data_dir()?.join("secrets.json"),
+    )))
 }

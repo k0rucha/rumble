@@ -16,6 +16,10 @@
   --accent-text: #ffffff;
   --accent-soft: #fdebe1;
   --danger: #c92a2a;
+  /* 送信元の検証結果の色 (SenderTrust.svelte) */
+  --trust-verified: #2b8a3e;
+  --trust-reported: #1971c2;
+  --trust-partial: #b3590a;
   --shadow: 0 12px 40px rgb(0 0 0 / 18%);
 
   --radius: 8px;
@@ -39,6 +43,9 @@
     --accent-text: #1e1d1b;
     --accent-soft: #3a251a;
     --danger: #ff6b6b;
+    --trust-verified: #69db7c;
+    --trust-reported: #74c0fc;
+    --trust-partial: #ffc078;
     --shadow: 0 12px 40px rgb(0 0 0 / 55%);
   }
 }
@@ -129,6 +136,34 @@ button.ghost {
 
 a {
   color: var(--accent);
+}
+
+/* 狭い画面 (スマートフォン) でだけ見せる部品。幅の境界は App.svelte と同じ 760px */
+.narrow-only {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  :root {
+    font-size: 15px;
+  }
+
+  .narrow-only {
+    display: inline-flex;
+  }
+
+  .wide-only {
+    display: none;
+  }
+
+  /* 指で押しやすい大きさにする */
+  button {
+    padding: 8px 12px;
+  }
+
+  button.ghost {
+    padding: 8px;
+  }
 }
 
 .muted {

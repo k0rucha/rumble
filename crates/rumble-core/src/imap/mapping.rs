@@ -2,7 +2,7 @@
 
 use async_imap::types::{Fetch, Flag, Name, NameAttribute};
 
-use crate::domain::{Mailbox, MailboxRole, MessageSummary};
+use crate::domain::{Category, Mailbox, MailboxRole, MessageSummary};
 use crate::mime;
 
 pub fn mailbox_from_name(name: &Name) -> Mailbox {
@@ -95,6 +95,11 @@ pub fn summary_from_fetch(fetch: &Fetch) -> Option<MessageSummary> {
         flagged: has_flag(Flag::Flagged),
         answered: has_flag(Flag::Answered),
         has_attachment: headers.has_attachment,
+        // 分類結果はサーバー上のキーワードとして付いている
+        category: fetch.flags().find_map(|flag| match flag {
+            Flag::Custom(keyword) => Category::from_keyword(&keyword),
+            _ => None,
+        }),
     })
 }
 

@@ -12,7 +12,7 @@
 //! いずれの場合も、外部のページをアプリのウィンドウ内に読み込むことはない。
 
 use tauri::plugin::{Builder, TauriPlugin};
-use tauri::{Emitter, Runtime, Url};
+use tauri::{AppHandle, Emitter, Manager, Runtime, Url};
 use tauri_plugin_opener::OpenerExt;
 
 /// `mailto:` リンクが押されたことをフロントエンドへ知らせるイベント名。
@@ -28,14 +28,23 @@ pub fn plugin<R: Runtime>() -> TauriPlugin<R> {
                 "mailto" => {
                     let _ = webview.emit(COMPOSE_EVENT, url.path());
                 }
-                "http" | "https" => {
-                    let _ = webview.opener().open_url(url.as_str(), None::<&str>);
-                }
+                "http" | "https" => open_in_browser(webview.app_handle().clone(), url.to_string()),
                 _ => {}
             }
             false
         })
         .build()
+}
+
+/// 既定のブラウザで開く。
+///
+/// このハンドラーは UI スレッドで呼ばれる。Android ではブラウザの起動が
+/// 「UI スレッドでの処理が終わるのを待つ」実装なので、ここから直接呼ぶと
+/// 自分自身を待ち続けて固まり、アプリが OS に強制終了される。必ず別スレッドで開く。
+fn open_in_browser<R: Runtime>(app: AppHandle<R>, url: String) {
+    std::thread::spawn(move || {
+        let _ = app.opener().open_url(url, None::<&str>);
+    });
 }
 
 fn is_app_page(url: &Url) -> bool {

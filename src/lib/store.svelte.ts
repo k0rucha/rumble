@@ -4,21 +4,30 @@
 // 操作は先に画面へ反映し (楽観的更新)、サーバーが拒否したら一覧を取り直して
 // サーバーの状態に合わせ直す。
 
+import { dismissTopmost } from "./back";
 import * as backend from "./backend";
 import { addressLabel, fullDate, quote, splitRecipients, withPrefix } from "./format";
 import type {
   Account,
+  Category,
   Mailbox,
   MessageBody,
+  MessageSource,
   MessageSummary,
   NewAccount,
   OutgoingMessage,
+  SenderAuth,
 } from "./types";
 
 /** 一覧を 1 回に取得する件数 */
 const PAGE_SIZE = 50;
+/** 自動分類を 1 回に依頼する件数 */
+const CLASSIFY_BATCH_SIZE = 50;
 /** 自動更新で取り直す件数の上限 */
 const MAX_REFRESH_SIZE = 200;
+
+/** 1 画面に 1 ペインだけを出す幅か (styles.css の --narrow と同じ値) */
+const isNarrowScreen = () => window.matchMedia("(max-width: 760px)").matches;
 
 export interface Location {
   accountId: string;
@@ -61,25 +70,47 @@ class MailStore {
   listLoading = $state(false);
   /** 検索結果を表示中なら、その検索語 */
   activeSearch = $state<string | null>(null);
+  /** 区分で絞り込み中なら、その区分 (検索とは同時に使わない) */
+  activeCategory = $state<Category | null>(null);
+
+  // ---- 自動分類 ----
+  /** API キーが登録済みで、自動分類が有効か */
+  classifierEnabled = $state(false);
+  classifierDialogOpen = $state(false);
 
   // ---- 開いているメール ----
   selectedUid = $state<number | null>(null);
   openMessage = $state<MessageBody | null>(null);
   messageLoading = $state(false);
+  /** 開いているメールの送信元の検証結果。検証中や対象外のフォルダでは null */
+  senderAuth = $state<SenderAuth | null>(null);
+  senderAuthLoading = $state(false);
+  sourceDialogOpen = $state(false);
 
   // ---- ダイアログと通知 ----
   draft = $state<Draft | null>(null);
   sending = $state(false);
   accountDialogOpen = $state(false);
+  /** 狭い画面でフォルダ一覧 (引き出し) を開いているか */
+  sidebarOpen = $state(false);
   notices = $state<Notice[]>([]);
 
   // 古いリクエストの結果で新しい表示を上書きしないための通し番号
   #listRequest = 0;
   #messageRequest = 0;
   #noticeId = 0;
+  /** 分類を依頼中の UID (二重に依頼しないため) */
+  #classifying = new Set<number>();
+  /** 分類に失敗したら、この起動中は自動では再試行しない (エラーを出し続けないため) */
+  #classifierFailed = false;
+
+  /** 検索や絞り込みをしていない、フォルダそのものの一覧か */
+  get isPlainListing(): boolean {
+    return this.activeSearch === null && this.activeCategory === null;
+  }
 
   get hasMore(): boolean {
-    return this.activeSearch === null && this.messages.length < this.total;
+    return this.isPlainListing && this.messages.length < this.total;
   }
 
   get selectedSummary(): MessageSummary | undefined {
@@ -99,7 +130,9 @@ class MailStore {
     await backend.onComposeRequest((address) =>
       this.compose({ to: decodeURIComponent(address) }),
     );
+    await backend.onBackButton(() => this.back());
 
+    this.classifierEnabled = await backend.classifierEnabled().catch(() => false);
     this.accounts = (await this.#attempt(() => backend.listAccounts())) ?? [];
     this.ready = true;
     if (this.accounts.length === 0) {
@@ -108,6 +141,19 @@ class MailStore {
     }
     await Promise.all(this.accounts.map((account) => this.#loadMailboxes(account.id)));
     await this.#openInbox(this.accounts[0].id);
+  }
+
+  /**
+   * Android の戻るボタン。手前にあるものから順に 1 つずつ戻る:
+   * ダイアログ → フォルダ一覧の引き出し → 開いているメール → 検索結果 → アプリを終了
+   */
+  back() {
+    if (dismissTopmost()) return;
+    if (this.sidebarOpen) this.sidebarOpen = false;
+    else if (this.selectedUid !== null) this.closeMessage();
+    else if (this.activeSearch !== null) void this.clearSearch();
+    else if (this.activeCategory !== null) void this.filterByCategory(null);
+    else void backend.exitApp();
   }
 
   // ======================================================================
@@ -142,6 +188,7 @@ class MailStore {
 
   async openMailbox(accountId: string, mailbox: Mailbox) {
     if (!mailbox.selectable) return;
+    this.sidebarOpen = false;
     this.location = { accountId, mailbox };
     this.#clearList();
     await this.#fetchList({ offset: 0, limit: PAGE_SIZE, replace: true });
@@ -151,6 +198,7 @@ class MailStore {
   async refresh({ quiet = false } = {}) {
     if (!this.location) return;
     if (this.activeSearch !== null) return this.search(this.activeSearch);
+    if (this.activeCategory !== null) return this.filterByCategory(this.activeCategory);
 
     const limit = Math.min(Math.max(this.messages.length, PAGE_SIZE), MAX_REFRESH_SIZE);
     await this.#fetchList({ offset: 0, limit, replace: true, quiet });
@@ -168,22 +216,52 @@ class MailStore {
     if (!location) return;
     if (query.trim() === "") return this.clearSearch();
 
-    const request = ++this.#listRequest;
     this.activeSearch = query.trim();
-    this.listLoading = true;
-    const page = await this.#attempt(() =>
+    this.activeCategory = null;
+    await this.#showFound(() =>
       backend.searchMessages(location.accountId, location.mailbox.path, query),
     );
-    if (request !== this.#listRequest) return;
-    this.listLoading = false;
-    this.messages = page?.messages ?? [];
-    this.total = page?.total ?? 0;
   }
 
   async clearSearch() {
     if (this.activeSearch === null) return;
     this.activeSearch = null;
     await this.#fetchList({ offset: 0, limit: PAGE_SIZE, replace: true });
+  }
+
+  /** 自動分類の区分で絞り込む (サーバー側のキーワード検索)。null なら解除 */
+  async filterByCategory(category: Category | null) {
+    const location = this.location;
+    if (!location) return;
+    this.activeSearch = null;
+    this.activeCategory = category;
+    if (category === null) {
+      await this.#fetchList({ offset: 0, limit: PAGE_SIZE, replace: true });
+      return;
+    }
+    await this.#showFound(() =>
+      backend.listByCategory(location.accountId, location.mailbox.path, category),
+    );
+  }
+
+  // ======================================================================
+  // 自動分類
+  // ======================================================================
+
+  /** 失敗したら例外を投げる (ダイアログ側でその場に表示する) */
+  async enableClassifier(apiKey: string) {
+    await backend.enableClassifier(apiKey);
+    this.classifierEnabled = true;
+    this.#classifierFailed = false;
+    this.classifierDialogOpen = false;
+    void this.#classifyUnsorted();
+  }
+
+  async disableClassifier() {
+    if (!(await this.#succeeds(() => backend.disableClassifier()))) return;
+    this.classifierEnabled = false;
+    this.classifierDialogOpen = false;
+    if (this.activeCategory !== null) await this.filterByCategory(null);
   }
 
   // ======================================================================
@@ -198,17 +276,59 @@ class MailStore {
     this.selectedUid = uid;
     this.openMessage = null;
     this.messageLoading = true;
+    this.senderAuth = null;
+    this.senderAuthLoading = false;
     const body = await this.#attempt(() =>
       backend.getMessage(location.accountId, location.mailbox.path, uid),
     );
     if (request !== this.#messageRequest) return;
     this.messageLoading = false;
     this.openMessage = body ?? null;
+    if (body) void this.#verifySender(location, uid, request);
 
     // 開けたら既読にする
     if (body && this.selectedSummary && !this.selectedSummary.seen) {
       await this.setSeen(uid, true);
     }
+  }
+
+  /** 開いているメールを閉じて一覧に戻る (狭い画面用) */
+  closeMessage() {
+    this.#forgetOpenMessage();
+  }
+
+  /** 開いているメールのヘッダー全文と生データを取得する (ソース表示用) */
+  async loadSource(): Promise<MessageSource | undefined> {
+    const location = this.location;
+    const uid = this.selectedUid;
+    if (!location || uid === null) return undefined;
+    return this.#attempt(() => backend.messageSource(location.accountId, location.mailbox.path, uid));
+  }
+
+  /**
+   * 送信元を検証する。本文は先に表示しておき、結果は後から届く。
+   * 自分が出したメール (送信済み・下書き) は検証の対象にしない。
+   */
+  async #verifySender(location: Location, uid: number, request: number) {
+    if (location.mailbox.role === "sent" || location.mailbox.role === "drafts") return;
+    this.senderAuthLoading = true;
+    // 検証できなくても本文は読めるので、失敗は通知せず「結果なし」にとどめる
+    const auth = await backend
+      .verifySender(location.accountId, location.mailbox.path, uid)
+      .catch(() => null);
+    if (request !== this.#messageRequest) return;
+    this.senderAuthLoading = false;
+    this.senderAuth = auth;
+  }
+
+  #forgetOpenMessage() {
+    this.#messageRequest++;
+    this.selectedUid = null;
+    this.openMessage = null;
+    this.messageLoading = false;
+    this.senderAuth = null;
+    this.senderAuthLoading = false;
+    this.sourceDialogOpen = false;
   }
 
   /** 一覧の前後のメールへ移動する (キーボード操作用) */
@@ -444,13 +564,57 @@ class MailStore {
 
   #clearList() {
     this.#listRequest++;
-    this.#messageRequest++;
     this.messages = [];
     this.total = 0;
     this.activeSearch = null;
-    this.selectedUid = null;
-    this.openMessage = null;
-    this.messageLoading = false;
+    this.activeCategory = null;
+    this.#forgetOpenMessage();
+  }
+
+  /** 検索・絞り込みの結果を一覧に表示する */
+  async #showFound(find: () => Promise<{ total: number; messages: MessageSummary[] }>) {
+    const request = ++this.#listRequest;
+    this.listLoading = true;
+    const page = await this.#attempt(find);
+    if (request !== this.#listRequest) return;
+    this.listLoading = false;
+    this.messages = page?.messages ?? [];
+    this.total = page?.total ?? 0;
+    void this.#classifyUnsorted();
+  }
+
+  /**
+   * 表示中の一覧のうち、まだ区分の無いメールを分類する。
+   * 結果はバックエンドがサーバー上のメールに付けるので、次回からは一覧と一緒に届く。
+   */
+  async #classifyUnsorted() {
+    const location = this.location;
+    if (!location || !this.classifierEnabled || this.#classifierFailed) return;
+
+    const uids = this.messages
+      .filter((message) => message.category === null && !this.#classifying.has(message.uid))
+      .slice(0, CLASSIFY_BATCH_SIZE)
+      .map((message) => message.uid);
+    if (uids.length === 0) return;
+
+    uids.forEach((uid) => this.#classifying.add(uid));
+    const classified = await this.#attempt(() =>
+      backend.classifyMessages(location.accountId, location.mailbox.path, uids),
+    );
+    uids.forEach((uid) => this.#classifying.delete(uid));
+    if (!classified) {
+      this.#classifierFailed = true;
+      return;
+    }
+    // 待っている間に別のフォルダへ移っていたら、結果は捨てる (UID はフォルダごとの番号)
+    if (this.location !== location) return;
+
+    const categories = new Map(classified);
+    for (const message of this.messages) {
+      message.category ??= categories.get(message.uid) ?? null;
+    }
+    // 1 回ぶんに収まらなかった残りを続けて処理する。1 通も進まなければ打ち切る
+    if (classified.length > 0) void this.#classifyUnsorted();
   }
 
   async #fetchList(options: { offset: number; limit: number; replace: boolean; quiet?: boolean }) {
@@ -479,6 +643,7 @@ class MailStore {
       const known = new Set(this.messages.map((message) => message.uid));
       this.messages.push(...page.messages.filter((message) => !known.has(message.uid)));
     }
+    void this.#classifyUnsorted();
   }
 
   async #syncFlag(uid: number, flag: "seen" | "flagged", enabled: boolean) {
@@ -499,9 +664,9 @@ class MailStore {
     if (!removed.seen) this.#adjustUnseen(-1);
 
     const next = this.messages[index] ?? this.messages[index - 1];
-    this.selectedUid = null;
-    this.openMessage = null;
-    if (next) void this.select(next.uid);
+    this.closeMessage();
+    // 3 ペイン表示では続けて次のメールを開く。1 画面ずつの表示では一覧に戻るだけ
+    if (next && !isNarrowScreen()) void this.select(next.uid);
 
     if (!(await this.#succeeds(serverAction))) await this.refresh({ quiet: true });
   }
@@ -512,7 +677,7 @@ class MailStore {
     const isShowing =
       location?.accountId === accountId &&
       location.mailbox.path.toUpperCase() === mailboxPath.toUpperCase();
-    if (isShowing && this.activeSearch === null) await this.refresh({ quiet: true });
+    if (isShowing && this.isPlainListing) await this.refresh({ quiet: true });
   }
 }
 

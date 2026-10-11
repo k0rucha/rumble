@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::Category;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Address {
@@ -23,6 +25,8 @@ pub struct MessageSummary {
     pub answered: bool,
     /// Content-Type からの推定 (multipart/mixed なら true)
     pub has_attachment: bool,
+    /// 自動分類の結果。まだ分類していなければ None
+    pub category: Option<Category>,
 }
 
 /// 一覧の 1 ページ。新しい順。

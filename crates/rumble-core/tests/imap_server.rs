@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_native_tls::TlsConnector;
-use rumble_core::domain::{MailboxRole, MessageFlag};
+use rumble_core::domain::{Category, MailboxRole, MessageFlag};
 use rumble_core::imap::{ops, watcher, ImapSession};
 use rumble_core::mime;
 use tokio::net::TcpStream;
@@ -191,6 +191,65 @@ async fn browse_search_and_organize_mail_on_the_server() {
             .uid,
         invoice
     );
+}
+
+#[tokio::test]
+#[ignore = "要 Dovecot (ファイル冒頭を参照)"]
+async fn categories_live_on_the_server_as_keywords() {
+    let user = fresh_user("category");
+    let mut session = login(&user).await;
+    let s = &mut session;
+    // 件名の後ろに、一斉配信メールが持つヘッダーを足す
+    let bulk_subject = "Autumn sale\r\nList-Unsubscribe: <https://shop.example/unsubscribe>";
+    ops::append_message(s, "INBOX", &mail(bulk_subject, "50% off"))
+        .await
+        .unwrap();
+    ops::append_message(s, "INBOX", &mail("Lunch?", "tomorrow"))
+        .await
+        .unwrap();
+    let page = ops::list_messages(s, "INBOX", 0, 50).await.unwrap();
+    let (lunch, sale) = (page.messages[0].uid, page.messages[1].uid);
+    assert!(page.messages.iter().all(|m| m.category.is_none()));
+
+    // --- 分類の手がかり: ヘッダーだけで取れる
+    let mut signals = ops::fetch_classification_signals(s, "INBOX", &[sale, lunch])
+        .await
+        .unwrap();
+    signals.sort_by_key(|(uid, _)| *uid);
+    assert_eq!(signals[0].0, sale);
+    assert_eq!(signals[0].1.subject, "Autumn sale");
+    assert!(signals[0].1.is_mailing_list);
+    assert!(!signals[1].1.is_mailing_list);
+
+    // --- 結果をキーワードとして保存すると、一覧と一緒に返ってくる
+    let classified = [(sale, Category::Newsletter), (lunch, Category::Personal)];
+    assert!(ops::store_categories(s, "INBOX", &classified)
+        .await
+        .unwrap());
+    let page = ops::list_messages(s, "INBOX", 0, 50).await.unwrap();
+    assert_eq!(page.messages[0].category, Some(Category::Personal));
+    assert_eq!(page.messages[1].category, Some(Category::Newsletter));
+
+    // --- 区分での絞り込みはサーバー側のキーワード検索
+    let newsletters = ops::list_by_category(s, "INBOX", Category::Newsletter)
+        .await
+        .unwrap();
+    assert_eq!(newsletters.total, 1);
+    assert_eq!(newsletters.messages[0].uid, sale);
+    assert_eq!(
+        ops::list_by_category(s, "INBOX", Category::Receipt)
+            .await
+            .unwrap()
+            .total,
+        0
+    );
+
+    // --- 別の接続 (= 別の端末) からも同じ分類が見える
+    let mut another_device = login(&user).await;
+    let seen = ops::list_messages(&mut another_device, "INBOX", 0, 50)
+        .await
+        .unwrap();
+    assert_eq!(seen.messages[1].category, Some(Category::Newsletter));
 }
 
 #[tokio::test]

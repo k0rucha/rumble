@@ -26,6 +26,9 @@ pub enum Error {
     #[error("メールの送信に失敗しました: {0}")]
     Smtp(String),
 
+    #[error("自動分類に失敗しました: {0}")]
+    Classifier(String),
+
     #[error("パスワードの保管庫にアクセスできません: {0}")]
     Secret(String),
 

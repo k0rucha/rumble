@@ -1,6 +1,6 @@
 // 表示用の整形。状態を持たない純粋な関数だけを置く。
 
-import type { Address, Mailbox, MailboxRole } from "./types";
+import type { Address, Category, Mailbox, MailboxRole } from "./types";
 
 const ROLE_LABELS: Record<Exclude<MailboxRole, "other">, string> = {
   inbox: "受信トレイ",
@@ -17,6 +17,14 @@ const ROLE_LABELS: Record<Exclude<MailboxRole, "other">, string> = {
 export function mailboxLabel(mailbox: Mailbox): string {
   return mailbox.role === "other" ? mailbox.name : ROLE_LABELS[mailbox.role];
 }
+
+/** 一覧に見せる区分 (「その他」は印を付けないので含めない) */
+export const CATEGORY_LABELS: Record<Exclude<Category, "other">, string> = {
+  personal: "個人",
+  notification: "通知",
+  receipt: "取引",
+  newsletter: "宣伝",
+};
 
 export function addressLabel(address: Address | null | undefined): string {
   if (!address) return "(差出人なし)";

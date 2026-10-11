@@ -6,6 +6,7 @@
   import type { Address, AttachmentInfo } from "../lib/types";
   import HtmlBody from "./HtmlBody.svelte";
   import Icon from "./Icon.svelte";
+  import SenderTrust from "./SenderTrust.svelte";
 
   const message = $derived(store.openMessage);
   const summary = $derived(store.selectedSummary);
@@ -67,14 +68,17 @@
     <p class="placeholder muted">メールを選択してください</p>
   {:else}
     <div class="toolbar">
-      <button disabled={!message} onclick={() => store.reply({ all: false })}>
-        <Icon name="reply" /> 返信
+      <button class="ghost narrow-only" aria-label="一覧に戻る" onclick={() => store.closeMessage()}>
+        <Icon name="back" />
       </button>
-      <button disabled={!message} onclick={() => store.reply({ all: true })}>
-        <Icon name="replyAll" /> 全員に返信
+      <button disabled={!message} title="返信" onclick={() => store.reply({ all: false })}>
+        <Icon name="reply" /> <span class="wide-only">返信</span>
       </button>
-      <button disabled={!message} onclick={() => store.forward()}>
-        <Icon name="forward" /> 転送
+      <button disabled={!message} title="全員に返信" onclick={() => store.reply({ all: true })}>
+        <Icon name="replyAll" /> <span class="wide-only">全員に返信</span>
+      </button>
+      <button disabled={!message} title="転送" onclick={() => store.forward()}>
+        <Icon name="forward" /> <span class="wide-only">転送</span>
       </button>
 
       <span class="spacer"></span>
@@ -123,7 +127,13 @@
 
     {#if message}
       <header class="selectable">
-        <h2>{message.subject || "(件名なし)"}</h2>
+        <div class="title">
+          {#if store.senderAuth?.logo}
+            <!-- 差出人ドメインが公開しているロゴ (BIMI)。意味は下の検証結果の中で説明する -->
+            <img class="logo" src={store.senderAuth.logo.dataUrl} alt="" />
+          {/if}
+          <h2>{message.subject || "(件名なし)"}</h2>
+        </div>
         <dl>
           <dt>差出人</dt>
           <dd>{message.from ? addressFull(message.from) : "(差出人なし)"}</dd>
@@ -136,6 +146,7 @@
           <dt>日時</dt>
           <dd>{fullDate(message.date)}</dd>
         </dl>
+        <SenderTrust />
       </header>
 
       {#if message.attachments.length > 0}
@@ -214,8 +225,25 @@
     border-bottom: 1px solid var(--border);
   }
 
+  .title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .logo {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: #fff;
+    object-fit: cover;
+  }
+
   h2 {
-    margin: 0 0 10px;
+    margin: 0;
     font-size: 18px;
     line-height: 1.3;
     overflow-wrap: anywhere;
@@ -261,6 +289,30 @@
     padding: 6px 20px;
     background: var(--accent-soft);
     border-bottom: 1px solid var(--border);
+  }
+
+  @media (max-width: 760px) {
+    .toolbar {
+      gap: 2px;
+      padding: 6px 8px;
+    }
+
+    .toolbar button:not(.ghost) {
+      border-color: transparent;
+      background: transparent;
+      padding: 8px;
+    }
+
+    select {
+      max-width: 84px;
+    }
+
+    header,
+    .attachments,
+    .text {
+      padding-left: 14px;
+      padding-right: 14px;
+    }
   }
 
   .text {

@@ -5,15 +5,16 @@
 //! 引数で受け取るだけで、選択中のフォルダのような画面の状態は持たない。
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::authenticity::SenderVerifier;
 use crate::cache::{CacheKey, MessageCache};
+use crate::classifier::{Jev, MailSignals};
 use crate::domain::{
-    Account, MailEvent, Mailbox, MailboxRole, MailboxStatus, MessageBody, MessageFlag, MessagePage,
-    NewAccount, OutgoingMessage, SendReport, SentCopy,
+    Account, Category, MailEvent, Mailbox, MailboxRole, MailboxStatus, MessageBody, MessageFlag,
+    MessagePage, MessageSource, NewAccount, OutgoingMessage, SendReport, SenderAuth, SentCopy,
 };
 use crate::imap::watcher::InboxWatcher;
 use crate::imap::{connection, ops, ImapConnection, ImapSession};
@@ -22,6 +23,10 @@ use crate::{mime, smtp, Error, Result};
 
 /// 開いたメールをメモリに保持する上限。超えたぶんは古い順に捨てる。
 const MESSAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// 分類モデル (TypeSafe) の API キーを資格情報ストアに置くときの名前。
+/// アカウント ID は UUID なので衝突しない。
+const CLASSIFIER_KEY_ID: &str = "typesafe-api-key";
 
 /// サーバー側の変化を画面へ伝えるためのコールバック。
 pub type EventSink = Arc<dyn Fn(MailEvent) + Send + Sync>;
@@ -36,6 +41,10 @@ pub struct MailService {
     connections: Mutex<HashMap<String, Arc<AsyncMutex<ImapConnection>>>>,
     watchers: Mutex<HashMap<String, InboxWatcher>>,
     cache: Mutex<MessageCache>,
+    /// キーワードを保存できないサーバー向けの、分類結果の控え (メモリのみ)。
+    /// 同じメールを同じ起動中に何度も分類し直さないためのもの
+    remembered_categories: Mutex<HashMap<CacheKey, Category>>,
+    sender_verifier: SenderVerifier,
 }
 
 impl MailService {
@@ -53,6 +62,8 @@ impl MailService {
             connections: Mutex::default(),
             watchers: Mutex::default(),
             cache: Mutex::new(MessageCache::new(MESSAGE_CACHE_BYTES)),
+            remembered_categories: Mutex::default(),
+            sender_verifier: SenderVerifier::new(),
         })
     }
 
@@ -95,6 +106,10 @@ impl MailService {
         self.watchers.lock().unwrap().remove(account_id);
         self.connections.lock().unwrap().remove(account_id);
         self.cache.lock().unwrap().remove_account(account_id);
+        self.remembered_categories
+            .lock()
+            .unwrap()
+            .retain(|key, _| key.account_id != account_id);
         self.secret_store.delete(account_id)
     }
 
@@ -134,10 +149,12 @@ impl MailService {
         offset: u32,
         limit: u32,
     ) -> Result<MessagePage> {
-        self.imap(account_id, async |session| {
-            ops::list_messages(session, mailbox, offset, limit).await
-        })
-        .await
+        let page = self
+            .imap(account_id, async |session| {
+                ops::list_messages(session, mailbox, offset, limit).await
+            })
+            .await?;
+        Ok(self.with_remembered_categories(account_id, mailbox, page))
     }
 
     pub async fn search_messages(
@@ -146,8 +163,82 @@ impl MailService {
         mailbox: &str,
         query: &str,
     ) -> Result<MessagePage> {
+        let page = self
+            .imap(account_id, async |session| {
+                ops::search_messages(session, mailbox, query).await
+            })
+            .await?;
+        Ok(self.with_remembered_categories(account_id, mailbox, page))
+    }
+
+    // ---- 自動分類 ---------------------------------------------------------
+
+    /// 自動分類が使える状態か (API キーが登録されているか)。
+    pub fn classifier_enabled(&self) -> bool {
+        self.secret_store.get(CLASSIFIER_KEY_ID).is_ok()
+    }
+
+    /// API キーを登録する。保存する前に、実際に 1 回問い合わせて使えるか確かめる。
+    pub async fn enable_classifier(&self, api_key: &str) -> Result<()> {
+        let api_key = api_key.trim();
+        let probe = MailSignals {
+            from: None,
+            to: Vec::new(),
+            subject: "Welcome".into(),
+            is_mailing_list: false,
+        };
+        Jev::new(api_key).classify(&probe).await?;
+        self.secret_store.set(CLASSIFIER_KEY_ID, api_key)
+    }
+
+    pub fn disable_classifier(&self) -> Result<()> {
+        self.secret_store.delete(CLASSIFIER_KEY_ID)
+    }
+
+    /// まだ区分の付いていないメールを分類し、結果をサーバー上のメールに付ける。
+    ///
+    /// 流れ: 手がかりのヘッダーを取得 → 分類モデルに尋ねる → キーワードとして保存。
+    /// モデルへの問い合わせ中は IMAP 接続を占有しない (他の操作を待たせない)。
+    pub async fn classify_messages(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uids: &[u32],
+    ) -> Result<Vec<(u32, Category)>> {
+        let api_key = self
+            .secret_store
+            .get(CLASSIFIER_KEY_ID)
+            .map_err(|_| Error::Classifier("TypeSafe の API キーが登録されていません".into()))?;
+        let signals = self
+            .imap(account_id, async |session| {
+                ops::fetch_classification_signals(session, mailbox, uids).await
+            })
+            .await?;
+        let classified = Jev::new(api_key).classify_all(signals).await?;
+
+        let stored = self
+            .imap(account_id, async |session| {
+                ops::store_categories(session, mailbox, &classified).await
+            })
+            .await?;
+        if !stored {
+            let mut remembered = self.remembered_categories.lock().unwrap();
+            for &(uid, category) in &classified {
+                remembered.insert(cache_key(account_id, mailbox, uid), category);
+            }
+        }
+        Ok(classified)
+    }
+
+    /// ある区分のメールだけを一覧する (サーバー側でキーワード検索する)。
+    pub async fn list_by_category(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        category: Category,
+    ) -> Result<MessagePage> {
         self.imap(account_id, async |session| {
-            ops::search_messages(session, mailbox, query).await
+            ops::list_by_category(session, mailbox, category).await
         })
         .await
     }
@@ -164,21 +255,45 @@ impl MailService {
         mime::parse_message(uid, &raw)
     }
 
-    /// 添付ファイルを `destination` に書き出す。
+    /// 送信元 (差出人のドメイン) が本物かを検証する。
     ///
-    /// rumble がメールの中身をディスクに書くのは、利用者が保存先を選んだこの場合だけ。
-    pub async fn save_attachment(
+    /// DNS への問い合わせを伴うので、本文の表示を待たせないよう `get_message` とは
+    /// 別に呼ぶ。検証できなかった場合もエラーにはせず、結果の中でそう伝える。
+    pub async fn verify_sender(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+    ) -> Result<SenderAuth> {
+        let raw = self.raw_message(account_id, mailbox, uid).await?;
+        Ok(self.sender_verifier.verify(&raw).await)
+    }
+
+    /// ヘッダーの全文と、本文を含む生データ (エンジニア向けの表示)。
+    pub async fn message_source(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        uid: u32,
+    ) -> Result<MessageSource> {
+        let raw = self.raw_message(account_id, mailbox, uid).await?;
+        Ok(mime::message_source(&raw))
+    }
+
+    /// 添付ファイル 1 つの (ファイル名, 中身) を返す。
+    ///
+    /// ディスクへは書かない。利用者が選んだ保存先への書き出しは呼び出し側
+    /// (`src-tauri/src/commands.rs`) の仕事で、rumble がメールの中身を
+    /// ディスクに書くのはその 1 か所だけ。
+    pub async fn attachment(
         &self,
         account_id: &str,
         mailbox: &str,
         uid: u32,
         attachment_index: u32,
-        destination: &Path,
-    ) -> Result<()> {
+    ) -> Result<(String, Vec<u8>)> {
         let raw = self.raw_message(account_id, mailbox, uid).await?;
-        let (_filename, bytes) = mime::extract_attachment(&raw, attachment_index)?;
-        tokio::fs::write(destination, bytes).await?;
-        Ok(())
+        mime::extract_attachment(&raw, attachment_index)
     }
 
     // ---- メールの操作 -----------------------------------------------------
@@ -359,6 +474,24 @@ impl MailService {
         Ok(raw)
     }
 
+    /// サーバーにキーワードを保存できなかったメールに、メモリ上の控えから区分を補う。
+    fn with_remembered_categories(
+        &self,
+        account_id: &str,
+        mailbox: &str,
+        mut page: MessagePage,
+    ) -> MessagePage {
+        let remembered = self.remembered_categories.lock().unwrap();
+        if !remembered.is_empty() {
+            for message in page.messages.iter_mut().filter(|m| m.category.is_none()) {
+                message.category = remembered
+                    .get(&cache_key(account_id, mailbox, message.uid))
+                    .copied();
+            }
+        }
+        page
+    }
+
     fn forget_cached(&self, account_id: &str, mailbox: &str, uids: &[u32]) {
         let mut cache = self.cache.lock().unwrap();
         for &uid in uids {
@@ -368,6 +501,14 @@ impl MailService {
                 uid,
             });
         }
+    }
+}
+
+fn cache_key(account_id: &str, mailbox: &str, uid: u32) -> CacheKey {
+    CacheKey {
+        account_id: account_id.to_string(),
+        mailbox: mailbox.to_string(),
+        uid,
     }
 }
 
@@ -387,6 +528,11 @@ mod tests {
         assert_send(service.set_flag("a", "INBOX", &[1], MessageFlag::Seen, true));
         assert_send(service.move_messages("a", "INBOX", &[1], "Archive"));
         assert_send(service.delete_messages("a", "INBOX", &[1]));
-        assert_send(service.save_attachment("a", "INBOX", 1, 0, Path::new("/tmp/x")));
+        assert_send(service.attachment("a", "INBOX", 1, 0));
+        assert_send(service.verify_sender("a", "INBOX", 1));
+        assert_send(service.message_source("a", "INBOX", 1));
+        assert_send(service.classify_messages("a", "INBOX", &[1]));
+        assert_send(service.list_by_category("a", "INBOX", Category::Other));
+        assert_send(service.enable_classifier("key"));
     }
 }

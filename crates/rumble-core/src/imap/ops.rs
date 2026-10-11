@@ -6,17 +6,23 @@
 //!
 //! メールの特定には、セッションをまたいでも変わらない UID だけを使う。
 
-use async_imap::types::Fetch;
+use async_imap::types::{Fetch, Flag};
 use futures::TryStreamExt;
 
 use super::mapping;
 use super::ImapSession;
-use crate::domain::{Mailbox, MailboxRole, MailboxStatus, MessageFlag, MessagePage};
+use crate::classifier::MailSignals;
+use crate::domain::{Category, Mailbox, MailboxRole, MailboxStatus, MessageFlag, MessagePage};
+use crate::mime;
 use crate::{Error, Result};
 
 /// 一覧に必要な最小限の項目。本文は取らない (PEEK なので既読にもならない)。
 const SUMMARY_ITEMS: &str = "(UID FLAGS INTERNALDATE RFC822.SIZE \
     BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE CONTENT-TYPE)])";
+
+/// 自動分類の手がかりにするヘッダー。
+const CLASSIFICATION_ITEMS: &str =
+    "(UID BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT LIST-UNSUBSCRIBE LIST-ID)])";
 
 /// 検索結果として一度に返す最大件数 (新しいものを優先)。
 const SEARCH_RESULT_LIMIT: usize = 200;
@@ -79,12 +85,27 @@ pub async fn search_messages(
     mailbox: &str,
     query: &str,
 ) -> Result<MessagePage> {
+    find_messages(session, mailbox, &search_criteria(query)?).await
+}
+
+/// 自動分類で、ある区分になったメールだけを一覧する。
+/// 区分はサーバー上のキーワードなので、絞り込みもサーバーに任せられる。
+pub async fn list_by_category(
+    session: &mut ImapSession,
+    mailbox: &str,
+    category: Category,
+) -> Result<MessagePage> {
+    find_messages(session, mailbox, &format!("KEYWORD {}", category.keyword())).await
+}
+
+/// 条件に合うメールを新しい順に (上限つきで) 返す。
+async fn find_messages(
+    session: &mut ImapSession,
+    mailbox: &str,
+    criteria: &str,
+) -> Result<MessagePage> {
     session.select(mailbox).await?;
-    let mut uids: Vec<u32> = session
-        .uid_search(search_criteria(query)?)
-        .await?
-        .into_iter()
-        .collect();
+    let mut uids: Vec<u32> = session.uid_search(criteria).await?.into_iter().collect();
     let total = uids.len() as u32;
     if uids.is_empty() {
         return Ok(MessagePage {
@@ -104,6 +125,67 @@ pub async fn search_messages(
         total,
         messages: newest_first(&fetches),
     })
+}
+
+/// 自動分類の手がかり (一部のヘッダーだけ) を取得する。本文は取らない。
+pub async fn fetch_classification_signals(
+    session: &mut ImapSession,
+    mailbox: &str,
+    uids: &[u32],
+) -> Result<Vec<(u32, MailSignals)>> {
+    if uids.is_empty() {
+        return Ok(Vec::new());
+    }
+    session.select(mailbox).await?;
+    let fetches: Vec<Fetch> = session
+        .uid_fetch(uid_set(uids), CLASSIFICATION_ITEMS)
+        .await?
+        .try_collect()
+        .await?;
+    Ok(fetches
+        .iter()
+        .filter_map(|fetch| {
+            Some((
+                fetch.uid?,
+                mime::parse_classification_signals(fetch.header()?),
+            ))
+        })
+        .collect())
+}
+
+/// 分類結果をキーワードとしてサーバー上のメールに付ける。
+///
+/// キーワードを保存できないサーバー (またはフォルダ) では何もせず false を返す。
+pub async fn store_categories(
+    session: &mut ImapSession,
+    mailbox: &str,
+    classified: &[(u32, Category)],
+) -> Result<bool> {
+    if classified.is_empty() {
+        return Ok(true);
+    }
+    let selected = session.select(mailbox).await?;
+    // `\*` は「任意のキーワードを新しく作ってよい」という意味 (RFC 3501)
+    let keywords_allowed = selected.permanent_flags.contains(&Flag::MayCreate);
+    if !keywords_allowed {
+        return Ok(false);
+    }
+    for category in Category::ALL {
+        let uids: Vec<u32> = classified
+            .iter()
+            .filter(|(_, c)| *c == category)
+            .map(|(uid, _)| *uid)
+            .collect();
+        if !uids.is_empty() {
+            store(
+                session,
+                &uids,
+                &format!("+FLAGS.SILENT ({})", category.keyword()),
+            )
+            .await?;
+        }
+    }
+    Ok(true)
 }
 
 /// メール 1 通をまるごと取得する。PEEK なので既読フラグは変えない

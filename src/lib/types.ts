@@ -53,6 +53,9 @@ export interface Address {
   email: string;
 }
 
+/** 自動分類の区分 (crates/rumble-core/src/domain/category.rs) */
+export type Category = "personal" | "notification" | "receipt" | "newsletter" | "other";
+
 export interface MessageSummary {
   uid: number;
   subject: string;
@@ -65,6 +68,8 @@ export interface MessageSummary {
   flagged: boolean;
   answered: boolean;
   hasAttachment: boolean;
+  /** 自動分類の結果。まだ分類していなければ null */
+  category: Category | null;
 }
 
 export interface MessagePage {
@@ -94,6 +99,63 @@ export interface MessageBody {
   text: string | null;
   hasRemoteContent: boolean;
   attachments: AttachmentInfo[];
+}
+
+/** 送信元の総合判定 (crates/rumble-core/src/domain/authenticity.rs) */
+export type TrustLevel = "verified" | "reported" | "partial" | "failed" | "unknown";
+
+export type CheckStatus = "pass" | "fail" | "inconclusive" | "none";
+
+/** rumble が自分で検算した DKIM 署名 */
+export interface SignatureCheck {
+  domain: string;
+  selector: string;
+  status: CheckStatus;
+  /** 差出人欄のドメインの署名とみなせるか */
+  aligned: boolean;
+  detail: string | null;
+}
+
+export type DmarcPolicy = "none" | "quarantine" | "reject";
+
+/** 受信サーバーが Authentication-Results に書いた検査結果 */
+export interface ReportedCheck {
+  method: string;
+  status: CheckStatus;
+  result: string;
+  domain: string | null;
+}
+
+export interface ReportedAuth {
+  /** 検査したと名乗っているサーバー */
+  verifier: string;
+  checks: ReportedCheck[];
+}
+
+export interface BrandLogo {
+  domain: string;
+  dataUrl: string;
+  /** 証明書 (VMC) が添えられているか。rumble は検証していない */
+  hasCertificate: boolean;
+}
+
+export interface SenderAuth {
+  level: TrustLevel;
+  fromDomain: string | null;
+  signatures: SignatureCheck[];
+  dmarcPolicy: DmarcPolicy | null;
+  reported: ReportedAuth | null;
+  logo: BrandLogo | null;
+  /** DNS に問い合わせられず、自前の検算ができなかった */
+  lookupFailed: boolean;
+}
+
+/** メールの生データ (エンジニア向けの表示用) */
+export interface MessageSource {
+  headers: string;
+  text: string;
+  totalBytes: number;
+  truncated: boolean;
 }
 
 export type MessageFlag = "seen" | "flagged" | "answered";

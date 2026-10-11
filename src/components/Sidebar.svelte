@@ -60,6 +60,9 @@
     {/each}
   </div>
 
+  <button class="ghost add" onclick={() => (store.classifierDialogOpen = true)}>
+    <Icon name="sort" /> 自動分類{store.classifierEnabled ? " (有効)" : ""}
+  </button>
   <button class="ghost add" onclick={() => (store.accountDialogOpen = true)}>
     <Icon name="plus" /> アカウントを追加
   </button>
@@ -114,6 +117,13 @@
   header:hover .remove,
   .remove:focus-visible {
     opacity: 1;
+  }
+
+  /* マウスの無い端末ではホバーで出せないので、常に見せる */
+  @media (hover: none) {
+    .remove {
+      opacity: 1;
+    }
   }
 
   .mailbox {

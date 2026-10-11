@@ -1,9 +1,9 @@
 <script lang="ts">
   // 中央ペイン: 開いているフォルダのメール一覧と検索欄。
   // 一覧はサーバーから少しずつ取得し、下までスクロールすると続きを読み込む。
-  import { addressLabel, mailboxLabel, shortDate } from "../lib/format";
+  import { addressLabel, CATEGORY_LABELS, mailboxLabel, shortDate } from "../lib/format";
   import { store } from "../lib/store.svelte";
-  import type { MessageSummary } from "../lib/types";
+  import type { Category, MessageSummary } from "../lib/types";
   import Icon from "./Icon.svelte";
 
   let query = $state("");
@@ -23,6 +23,8 @@
     return message.to.map((address) => addressLabel(address)).join(", ") || "(宛先なし)";
   }
 
+  const categories = Object.entries(CATEGORY_LABELS) as [Exclude<Category, "other">, string][];
+
   function onScroll(event: Event) {
     const list = event.currentTarget as HTMLElement;
     if (list.scrollHeight - list.scrollTop - list.clientHeight < 300) void store.loadMore();
@@ -37,9 +39,16 @@
 <section>
   <header>
     <div class="title">
+      <button
+        class="ghost narrow-only"
+        aria-label="フォルダ一覧を開く"
+        onclick={() => (store.sidebarOpen = true)}
+      >
+        <Icon name="menu" />
+      </button>
       <h1>{store.location ? mailboxLabel(store.location.mailbox) : ""}</h1>
       <span class="muted count">
-        {#if store.activeSearch !== null}
+        {#if !store.isPlainListing}
           {store.total} 件一致
         {:else}
           {store.total} 通
@@ -70,6 +79,27 @@
         </button>
       {/if}
     </form>
+
+    {#if store.classifierEnabled}
+      <div class="categories" role="group" aria-label="区分で絞り込む">
+        <button
+          class="chip"
+          class:active={store.activeCategory === null}
+          onclick={() => store.filterByCategory(null)}
+        >
+          すべて
+        </button>
+        {#each categories as [category, label] (category)}
+          <button
+            class="chip {category}"
+            class:active={store.activeCategory === category}
+            onclick={() => store.filterByCategory(category)}
+          >
+            {label}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </header>
 
   <div class="list" onscroll={onScroll}>
@@ -85,6 +115,9 @@
         <span class="date muted">{shortDate(message.date)}</span>
         <span class="subject">{message.subject || "(件名なし)"}</span>
         <span class="marks">
+          {#if message.category && message.category !== "other"}
+            <span class="tag {message.category}">{CATEGORY_LABELS[message.category]}</span>
+          {/if}
           {#if message.answered}<Icon name="reply" size={13} />{/if}
           {#if message.hasAttachment}<Icon name="attachment" size={13} />{/if}
           {#if message.flagged}<span class="star"><Icon name="flagged" size={13} filled /></span>{/if}
@@ -96,9 +129,9 @@
       <p class="status muted">読み込み中…</p>
     {:else if store.messages.length === 0}
       <p class="status muted">
-        {store.activeSearch !== null ? "一致するメールはありません" : "メールはありません"}
+        {store.isPlainListing ? "メールはありません" : "一致するメールはありません"}
       </p>
-    {:else if store.activeSearch !== null && store.messages.length < store.total}
+    {:else if !store.isPlainListing && store.messages.length < store.total}
       <p class="status muted">新しい順に {store.messages.length} 件を表示しています</p>
     {/if}
   </div>
@@ -171,6 +204,53 @@
     display: none;
   }
 
+  .categories {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    overflow-x: auto;
+  }
+
+  .chip {
+    padding: 2px 10px;
+    border-radius: 12px;
+    color: var(--category, var(--text));
+    font-size: 12px;
+  }
+
+  .chip.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+
+  /* 区分ごとの色。一覧の印 (.tag) と絞り込みボタン (.chip) で共通 */
+  .personal {
+    --category: #2f9e44;
+  }
+
+  .notification {
+    --category: #1c7ed6;
+  }
+
+  .receipt {
+    --category: #e67700;
+  }
+
+  .newsletter {
+    --category: #9c36b5;
+  }
+
+
+  .tag {
+    padding: 0 6px;
+    border: 1px solid var(--category);
+    border-radius: 8px;
+    color: var(--category);
+    font-size: 10px;
+    line-height: 15px;
+  }
+
   .list {
     flex: 1;
     overflow-y: auto;
@@ -241,6 +321,7 @@
   .marks {
     grid-area: marks;
     display: flex;
+    align-items: center;
     gap: 4px;
     color: var(--text-muted);
   }

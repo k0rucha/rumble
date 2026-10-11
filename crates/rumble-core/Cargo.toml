@@ -11,16 +11,25 @@ async-imap = { version = "0.12", default-features = false, features = ["runtime-
 async-native-tls = { version = "0.6", default-features = false, features = ["runtime-tokio"] }
 base64 = "0.22"
 futures = "0.3"
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
+mail-auth = { version = "0.13.3", default-features = false, features = ["dns-hickory", "rust-crypto"] }
 mail-parser = { version = "0.11", features = ["full_encoding"] }
 mime_guess = "2.0.5"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "sync", "time"] }
 utf7-imap = "0.3"
 uuid = { version = "1", features = ["v4"] }
+
+# OS の資格情報ストア。Android には対応するバックエンドが無いので使わない
+[target.'cfg(not(target_os = "android"))'.dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Android には OS 標準の TLS ライブラリが無いため、OpenSSL を同梱してビルドする
+[target.'cfg(target_os = "android")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 tempfile = "3"

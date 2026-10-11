@@ -6,11 +6,15 @@
 use base64::Engine;
 use mail_parser::{HeaderValue, Message, MessageParser, MimeHeaders, PartType};
 
-use crate::domain::{Address, AttachmentInfo, MessageBody};
+use crate::classifier::MailSignals;
+use crate::domain::{Address, AttachmentInfo, MessageBody, MessageSource};
 use crate::{Error, Result};
 
 /// 本文に埋め込む inline 画像 (cid:) の合計サイズ上限。
 const MAX_INLINE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// ソース表示で画面に渡す上限。添付つきの巨大なメールで画面が固まらないようにする。
+const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
 /// 一覧表示用に、ヘッダー部分だけから取り出した情報。
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -38,6 +42,24 @@ pub fn parse_summary_headers(header_bytes: &[u8]) -> SummaryHeaders {
                     .subtype()
                     .is_some_and(|s| s.eq_ignore_ascii_case("mixed"))
         }),
+    }
+}
+
+/// 自動分類の手がかりを、ヘッダー部分だけから取り出す。
+pub fn parse_classification_signals(header_bytes: &[u8]) -> MailSignals {
+    let Some(message) = MessageParser::default().parse(header_bytes) else {
+        return MailSignals {
+            from: None,
+            to: Vec::new(),
+            subject: String::new(),
+            is_mailing_list: false,
+        };
+    };
+    MailSignals {
+        from: addresses(message.from()).into_iter().next(),
+        to: addresses(message.to()),
+        subject: message.subject().unwrap_or_default().to_string(),
+        is_mailing_list: !message.list_unsubscribe().is_empty() || !message.list_id().is_empty(),
     }
 }
 
@@ -77,6 +99,26 @@ pub fn parse_message(uid: u32, raw: &[u8]) -> Result<MessageBody> {
             })
             .collect(),
     })
+}
+
+/// 生データを文字としてそのまま見せる (ヘッダーの全文と、本文を含む全体)。
+///
+/// デコードは一切しない。UTF-8 として読めないバイトは置き換え文字になる。
+pub fn message_source(raw: &[u8]) -> MessageSource {
+    // ヘッダーと本文の境目は最初の空行
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 2)
+        .or_else(|| raw.windows(2).position(|w| w == b"\n\n").map(|p| p + 1))
+        .unwrap_or(raw.len());
+    let shown = raw.len().min(MAX_SOURCE_BYTES);
+    MessageSource {
+        headers: String::from_utf8_lossy(&raw[..header_end]).into_owned(),
+        text: String::from_utf8_lossy(&raw[..shown]).into_owned(),
+        total_bytes: raw.len(),
+        truncated: shown < raw.len(),
+    }
 }
 
 /// 添付ファイル 1 つの (ファイル名, 中身) を取り出す。
@@ -198,6 +240,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_shows_headers_and_whole_message_undecoded() {
+        let raw = b"Subject: =?UTF-8?B?44GT44KT?=\r\nX-Folded: a\r\n b\r\n\r\nbody line\r\n";
+        let source = message_source(raw);
+        assert_eq!(
+            source.headers,
+            "Subject: =?UTF-8?B?44GT44KT?=\r\nX-Folded: a\r\n b\r\n"
+        );
+        assert!(source.text.ends_with("body line\r\n"));
+        assert_eq!(source.total_bytes, raw.len());
+        assert!(!source.truncated);
+    }
+
+    #[test]
+    fn huge_source_is_cut_off() {
+        let mut raw = b"Subject: big\r\n\r\n".to_vec();
+        raw.resize(MAX_SOURCE_BYTES + 10, b'a');
+        let source = message_source(&raw);
+        assert_eq!(source.text.len(), MAX_SOURCE_BYTES);
+        assert!(source.truncated);
+    }
+
+    #[test]
     fn decodes_japanese_headers() {
         // ISO-2022-JP を B エンコードした昔ながらの日本語メール
         let headers = b"From: =?ISO-2022-JP?B?GyRCOzNFRBsoQg==?= <yamada@example.com>\r\n\
@@ -214,6 +278,20 @@ mod tests {
         assert_eq!(summary.to.len(), 2);
         assert_eq!(summary.date, Some(1_791_601_200));
         assert!(summary.has_attachment);
+    }
+
+    #[test]
+    fn classification_signals_come_from_headers_only() {
+        let bulk = parse_classification_signals(
+            b"From: Shop <news@shop.example>\r\nTo: me@example.com\r\nSubject: Sale\r\n\
+              List-Unsubscribe: <https://shop.example/unsub>\r\n\r\n",
+        );
+        assert_eq!(bulk.subject, "Sale");
+        assert_eq!(bulk.from.unwrap().email, "news@shop.example");
+        assert!(bulk.is_mailing_list);
+
+        let direct = parse_classification_signals(b"From: a@example.com\r\nSubject: hi\r\n\r\n");
+        assert!(!direct.is_mailing_list);
     }
 
     #[test]

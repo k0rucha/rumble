@@ -1,6 +1,7 @@
 <script lang="ts">
   // 画面中央に重ねるダイアログの枠。中身は呼び出し側が渡す。
   import type { Snippet } from "svelte";
+  import { dismissOnBack } from "../lib/back";
   import Icon from "./Icon.svelte";
 
   let {
@@ -16,6 +17,9 @@
     children: Snippet;
     footer: Snippet;
   } = $props();
+
+  // 表示されている間は、Android の戻るボタンでも閉じられるようにする (Esc と同じ扱い)
+  $effect(() => dismissOnBack(() => onclose()));
 </script>
 
 <svelte:window onkeydown={(event) => event.key === "Escape" && onclose()} />
@@ -82,5 +86,19 @@
     gap: 8px;
     padding: 12px 18px;
     border-top: 1px solid var(--border);
+  }
+
+  /* 狭い画面では全画面で表示する */
+  @media (max-width: 760px) {
+    .backdrop {
+      padding: 0;
+    }
+
+    .dialog {
+      width: 100% !important;
+      height: 100%;
+      border: none;
+      border-radius: 0;
+    }
   }
 </style>

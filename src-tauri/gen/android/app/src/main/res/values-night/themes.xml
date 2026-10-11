@@ -1,0 +1,7 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.rumble" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- ステータスバーの裏に見える色。アプリの背景 (src/styles.css の bg-list) に合わせる -->
+        <item name="android:windowBackground">@color/app_background</item>
+    </style>
+</resources>

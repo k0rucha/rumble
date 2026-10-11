@@ -166,6 +166,16 @@
     font-size: 12px;
   }
 
+  @media (max-width: 760px) {
+    label span {
+      width: 84px;
+    }
+
+    .hint {
+      margin-left: 0;
+    }
+  }
+
   details {
     display: flex;
     flex-direction: column;

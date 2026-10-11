@@ -3,11 +3,18 @@
 //! ここには振る舞いをほとんど置かない。JSON では camelCase になる。
 
 mod account;
+mod authenticity;
+mod category;
 mod mailbox;
 mod message;
 mod outgoing;
 
 pub use account::{Account, NewAccount, Security, ServerEndpoint};
+pub use authenticity::{
+    BrandLogo, CheckStatus, DmarcPolicy, MessageSource, ReportedAuth, ReportedCheck, SenderAuth,
+    SignatureCheck, TrustLevel,
+};
+pub use category::Category;
 pub use mailbox::{Mailbox, MailboxRole, MailboxStatus};
 pub use message::{Address, AttachmentInfo, MessageBody, MessageFlag, MessagePage, MessageSummary};
 pub use outgoing::{MessageRef, OutgoingMessage, SendReport, SentCopy};

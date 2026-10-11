@@ -2,6 +2,7 @@
   // メール作成画面。新規・返信・転送で共通。
   // 書きかけの内容はメモリ上にしか無く、閉じると消える (下書き保存は未対応)。
   import { confirm, open } from "@tauri-apps/plugin-dialog";
+  import { isMobile } from "../lib/platform";
   import { store } from "../lib/store.svelte";
   import Dialog from "./Dialog.svelte";
   import Icon from "./Icon.svelte";
@@ -86,8 +87,11 @@
       <Icon name="sent" />
       {store.sending ? "送信中…" : "送信"}
     </button>
-    <button onclick={attach}><Icon name="attachment" /> 添付</button>
-    <span class="hint muted">⌘/Ctrl + Enter で送信</span>
+    <!-- モバイルのファイル選択はパスではなく content:// URI を返し、送信側がまだ読めない -->
+    {#if !isMobile}
+      <button onclick={attach}><Icon name="attachment" /> 添付</button>
+      <span class="hint muted">⌘/Ctrl + Enter で送信</span>
+    {/if}
   {/snippet}
 </Dialog>
 
@@ -119,7 +123,7 @@
 
   textarea {
     flex: 1;
-    min-height: 280px;
+    min-height: 200px;
     padding: 10px;
     resize: none;
     font-size: 14px;

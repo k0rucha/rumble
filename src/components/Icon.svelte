@@ -1,5 +1,7 @@
 <script lang="ts" module>
   // 線画アイコン (24x24)。形は Lucide (ISC License) に基づく。
+  const SHIELD =
+    '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>';
   const PATHS = {
     inbox:
       '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
@@ -30,6 +32,16 @@
     plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
     download:
       '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+    sort: '<path d="M12 2H2v10l9.29 9.29a1 1 0 0 0 1.42 0l8.58-8.58a1 1 0 0 0 0-1.42Z"/><path d="M7 7h.01"/>',
+    menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
+    back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    // 盾の形は 4 つとも共通で、中の記号だけが違う
+    shieldCheck: `${SHIELD}<path d="m9 12 2 2 4-4"/>`,
+    shieldAlert: `${SHIELD}<path d="M12 8v4"/><path d="M12 16h.01"/>`,
+    shieldX: `${SHIELD}<path d="m14.5 9.5-5 5"/><path d="m9.5 9.5 5 5"/>`,
+    shieldQuestion: `${SHIELD}<path d="M9.1 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>`,
+    code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+    chevronDown: '<path d="m6 9 6 6 6-6"/>',
     unread: '<circle cx="12" cy="12" r="5" fill="currentColor"/>',
   } as const;
 
