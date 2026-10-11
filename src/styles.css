@@ -1,0 +1,142 @@
+/* アプリ全体で共有する色・寸法と、素の要素の見た目。
+   部品ごとのスタイルは各 .svelte ファイルの中にある。 */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --bg-sidebar: #f4f3f1;
+  --bg-list: #fbfaf9;
+  --bg-hover: #eeece8;
+  --bg-selected: #fbe3d4;
+  --border: #e4e2de;
+  --text: #1f1d1a;
+  --text-muted: #77736c;
+  --accent: #d9480f;
+  --accent-text: #ffffff;
+  --accent-soft: #fdebe1;
+  --danger: #c92a2a;
+  --shadow: 0 12px 40px rgb(0 0 0 / 18%);
+
+  --radius: 8px;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1d1b;
+    --bg-sidebar: #171614;
+    --bg-list: #1a1917;
+    --bg-hover: #2a2825;
+    --bg-selected: #4a2d1c;
+    --border: #33312d;
+    --text: #ecebe8;
+    --text-muted: #9a968e;
+    --accent: #ff8a4c;
+    --accent-text: #1e1d1b;
+    --accent-soft: #3a251a;
+    --danger: #ff6b6b;
+    --shadow: 0 12px 40px rgb(0 0 0 / 55%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+input,
+textarea,
+select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  outline: none;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+/* 枠なしのアイコンボタン */
+button.ghost {
+  border-color: transparent;
+  background: transparent;
+  padding: 5px 7px;
+}
+
+a {
+  color: var(--accent);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}
