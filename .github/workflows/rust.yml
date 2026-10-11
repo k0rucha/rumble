@@ -1,0 +1,66 @@
+# Rust (rumble-core と Tauri シェル) の検査。
+# Rust に関係するファイルが変わったときだけ動く。
+name: Rust
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "src-tauri/**"
+      - "!src-tauri/gen/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/install-linux-deps.sh"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "src-tauri/**"
+      - "!src-tauri/gen/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/install-linux-deps.sh"
+      - ".github/workflows/rust.yml"
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt・clippy・テスト
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      # 統合テスト (crates/rumble-core/tests/imap_server.rs) の相手になる IMAP サーバー
+      dovecot:
+        image: dovecot/dovecot:latest
+        env:
+          USER_PASSWORD: password
+        ports:
+          - 31993:31993
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: scripts/install-linux-deps.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # キャッシュを書くのは main だけ (PR ごとに増やさない)
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Tauri はコンパイル時にフロントエンドの出力先があることを確かめる。
+      # ここでは中身を使わないので、空のディレクトリで足りる
+      - run: mkdir -p dist
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - name: IMAP サーバーを相手にした統合テスト
+        run: cargo test -p rumble-core --locked --test imap_server -- --ignored

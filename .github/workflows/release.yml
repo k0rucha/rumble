@@ -1,0 +1,165 @@
+# タグ (v1.2.3 など) を push すると、Windows / macOS / Linux / Android 向けに
+# ビルドして GitHub Release を作る。
+#
+# 手動実行 (workflow_dispatch) ではビルドだけを行い、Release は作らない。
+# タグを打つ前に、全プラットフォームでビルドが通るかを確かめるのに使う。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: バージョンの確認
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      # タグと、ファイルに書かれたバージョンが食い違ったままビルドしない
+      - if: github.ref_type == 'tag'
+        run: scripts/check-version.sh "$GITHUB_REF_NAME"
+
+  desktop:
+    name: ${{ matrix.name }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macOS (Intel)
+            os: macos-latest
+            target: x86_64-apple-darwin
+          # 古めの Ubuntu でビルドして、より多くのディストリビューションで動くようにする
+          - name: Linux
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: scripts/install-linux-deps.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+          # タグごとにキャッシュを増やさない。main での手動実行が書いたものを使い回す
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm tauri build --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rumble-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/deb/*.deb
+            target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/msi/*.msi
+            target/${{ matrix.target }}/release/bundle/nsis/*.exe
+
+  android:
+    name: Android
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      # ビルド結果 (target/) はキャッシュしない。Tauri はビルドスクリプトの中で Android 用の
+      # Kotlin ファイルを生成するので、キャッシュが効いてスクリプトが省かれるとビルドが壊れる
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-android
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: pnpm install --frozen-lockfile
+      # 署名鍵が登録されていればそれで署名する。無ければ build-android.sh が
+      # その場で作るデバッグ鍵で署名する (README の「リリース」を参照)
+      - name: 署名鍵の用意
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          fi
+      - name: APK のビルド
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          scripts/build-android.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rumble-android
+          if-no-files-found: error
+          path: dist-android/*.apk
+
+  publish:
+    name: Release の作成
+    if: github.ref_type == 'tag'
+    needs: [desktop, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: チェックサムの作成
+        working-directory: artifacts
+        run: |
+          find . -mindepth 2 -type f -exec mv {} . \;
+          find . -mindepth 1 -type d -empty -delete
+          sha256sum -- * > SHA256SUMS
+      - name: Release の作成
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag

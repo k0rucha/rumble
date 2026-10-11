@@ -239,3 +239,13 @@ authenticity/bimi.rs               ブランドロゴを DNS + HTTPS で取得
   送信メールの組み立て、設定ファイル、リンクの振り分け。
 - **統合テスト** (`crates/rumble-core/tests/imap_server.rs`) : Docker の Dovecot に対して
   一覧・検索・フラグ・移動・削除・IDLE を実際に実行します。通常は `#[ignore]` です。
+
+### CI
+
+`.github/workflows/` のワークフローは、コードの境界に合わせて分けています。フロントエンド (`src/`) と
+Rust (`crates/`・`src-tauri/`) は互いのビルド結果に依存しないので、`frontend.yml` と `rust.yml` は
+それぞれ自分の側のファイルが変わったときだけ動きます。統合テストは `rust.yml` の中で、
+Dovecot をサービスコンテナとして立てて実行します。
+
+CI は Linux だけで回します。ほかの OS と Android でのビルドは `release.yml` が受け持ち、
+タグを打つ前に手動実行で確かめられます。Android のビルドは手元と同じ `scripts/build-android.sh` を使います。

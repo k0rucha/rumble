@@ -118,7 +118,7 @@ scripts/build-android.sh    # dist-android/ に arm64 用の APK ができる
 ```
 
 スクリプトは APK をビルドし、手元の端末で試せるようデバッグ鍵で署名します
-(配布する場合は自分の鍵で署名し直してください)。`JAVA_HOME`・`ANDROID_HOME`・`NDK_HOME` は
+(配布用の鍵で署名する方法はスクリプト冒頭のコメントを参照)。`JAVA_HOME`・`ANDROID_HOME`・`NDK_HOME` は
 未設定なら macOS の Android Studio の標準的な場所を使います。
 
 Android 固有のコードは `src-tauri/gen/android/` にあります。ステータスバーとの重なりを
@@ -148,6 +148,56 @@ cargo test -p rumble-core --test imap_server -- --ignored
 ```
 
 コードの構成と設計判断は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) にまとめています。
+
+### CI
+
+GitHub Actions のワークフローは `.github/workflows/` にあります。変更したところに関係するものだけが動きます。
+
+| ワークフロー | 動く条件 | 内容 |
+|---|---|---|
+| `frontend.yml` | `src/` や `package.json` などの変更 | 型チェック、ビルド |
+| `rust.yml` | `crates/`・`src-tauri/`・`Cargo.*` の変更 | fmt、clippy、単体テスト、Dovecot を相手にした統合テスト |
+| `release.yml` | `v` で始まるタグの push、または手動実行 | 全プラットフォームのビルドと Release の作成 |
+
+ドキュメントだけの変更では何も動きません。
+
+## リリース
+
+1. `package.json`・`Cargo.toml`・`src-tauri/tauri.conf.json` のバージョンを揃えて上げ、main に入れる
+2. タグを push する
+
+   ```sh
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+`release.yml` が次のファイルをビルドし、すべて成功したら GitHub Release を作って添付します。
+タグとファイルのバージョンが食い違っていると、ビルドの前に止まります。
+
+| プラットフォーム | ファイル |
+|---|---|
+| macOS (Apple Silicon / Intel) | `.dmg` |
+| Windows (x64) | `.msi`、`-setup.exe` |
+| Linux (x64) | `.deb`、`.rpm`、`.AppImage` |
+| Android (arm64) | `.apk` |
+
+タグを打つ前に全プラットフォームでビルドが通るかを確かめたいときは、GitHub の Actions 画面から
+`Release` を手動実行します (ビルドだけを行い、Release は作りません)。
+
+署名について:
+
+- **macOS / Windows** のビルドはコード署名していません。初回起動時に OS の警告が出ます
+  (macOS では `xattr -cr /Applications/rumble.app` で隔離属性を外すと開けます)。
+- **Android** は、リポジトリの Secrets に次の 4 つを登録するとその鍵で署名します。
+  登録が無い場合はビルドのたびに作るデバッグ鍵で署名するため、**前のバージョンに上書きインストール
+  できません** (いったんアンインストールが必要です)。
+
+  | Secret | 内容 |
+  |---|---|
+  | `ANDROID_KEYSTORE_BASE64` | キーストアを base64 にしたもの (`base64 -i release.keystore`) |
+  | `ANDROID_KEYSTORE_PASSWORD` | キーストアのパスワード |
+  | `ANDROID_KEY_ALIAS` | 鍵の別名 |
+  | `ANDROID_KEY_PASSWORD` | 鍵のパスワード (キーストアと同じなら省略可) |
 
 ## いまできないこと
 

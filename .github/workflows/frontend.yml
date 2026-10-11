@@ -1,0 +1,50 @@
+# フロントエンド (Svelte + TypeScript) の検査。
+# フロントエンドに関係するファイルが変わったときだけ動く。
+name: Frontend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "svelte.config.js"
+      - "tsconfig.json"
+      - "vite.config.ts"
+      - ".github/workflows/frontend.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "svelte.config.js"
+      - "tsconfig.json"
+      - "vite.config.ts"
+      - ".github/workflows/frontend.yml"
+
+# 同じブランチに続けて push されたら、古い実行は打ち切る
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: 型チェックとビルド
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm build
